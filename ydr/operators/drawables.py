@@ -1,5 +1,6 @@
 import bpy
 from bpy.types import Context
+from ...sollumz_helper import SOLLUMZ_OT_base, find_sollumz_parent
 from ...sollumz_properties import SOLLUMZ_UI_NAMES, SollumType, LODLevel
 from ...lods import LODLevels
 from ...tools.drawablehelper import set_recommended_bone_properties, convert_obj_to_drawable, convert_obj_to_model, convert_objs_to_single_drawable, center_drawable_to_models
