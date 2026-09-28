@@ -1,5 +1,7 @@
 from ..tools.meshhelper import create_box
-from ..cwxml.navmesh import YNV
+from szio.gta5.cwxml import (
+    YNV,
+)
 from ..sollumz_properties import SOLLUMZ_UI_NAMES, SollumType
 import os
 import bpy
@@ -57,7 +59,8 @@ def get_material(flags, material_cache):
         return material_cache[flags]
 
     mat = bpy.data.materials.new(flags)
-    mat.use_nodes = True
+    if bpy.app.version < (5, 0, 0):
+        mat.use_nodes = True
     r, g, b = 0.0, 0.0, 0.0
 
     sp = flags.split(" ")

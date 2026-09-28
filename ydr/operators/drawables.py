@@ -1,8 +1,7 @@
 import bpy
 from bpy.types import Context
+from ...sollumz_properties import SOLLUMZ_UI_NAMES, SollumType, LODLevel
 from ...lods import LODLevels
-from ...sollumz_helper import SOLLUMZ_OT_base, find_sollumz_parent
-from ...sollumz_properties import SOLLUMZ_UI_NAMES, LODLevel, SollumType
 from ...tools.drawablehelper import set_recommended_bone_properties, convert_obj_to_drawable, convert_obj_to_model, convert_objs_to_single_drawable, center_drawable_to_models
 from ...tools.boundhelper import convert_obj_to_composite, convert_objs_to_single_composite
 from ...tools.blenderhelper import add_armature_modifier, add_child_of_bone_constraint, create_blender_object, create_empty_object, duplicate_object, get_child_of_constraint, set_child_of_constraint_space, tag_redraw
@@ -14,6 +13,8 @@ from ...tools.meshhelper import (
     mesh_rename_uv_maps_by_order,
     mesh_rename_color_attrs_by_order,
 )
+from ..shader_materials import shadermats_by_filename
+
 
 class SOLLUMZ_OT_create_drawable(bpy.types.Operator):
     """Create a Drawable empty"""
@@ -74,7 +75,7 @@ class SOLLUMZ_OT_convert_to_drawable(bpy.types.Operator):
         else:
             self.convert_to_single_drawable(context, selected_meshes, auto_embed_col, do_center)
 
-        self.report({"INFO"}, "Succesfully converted all selected objects to a Drawable.")
+        self.report({"INFO"}, "Successfully converted all selected objects to a Drawable.")
 
         return {"FINISHED"}
 
@@ -93,7 +94,7 @@ class SOLLUMZ_OT_convert_to_drawable(bpy.types.Operator):
                     composite_obj = convert_obj_to_composite(
                         duplicate_object(obj),
                         SollumType.BOUND_GEOMETRYBVH,
-                        context.window_manager.sz_flag_preset_index
+                        context.scene.sz_default_flag_preset_name
                     )
                     composite_obj.parent = drawable_obj
                     composite_obj.name = f"{drawable_obj.name}.col"
@@ -120,7 +121,7 @@ class SOLLUMZ_OT_convert_to_drawable(bpy.types.Operator):
                 composite_obj = convert_objs_to_single_composite(
                     col_objs,
                     SollumType.BOUND_GEOMETRYBVH,
-                    context.window_manager.sz_flag_preset_index
+                    context.scene.sz_default_flag_preset_name
                 )
                 composite_obj.parent = drawable_obj
 
@@ -145,38 +146,6 @@ class SOLLUMZ_OT_convert_to_drawable_model(bpy.types.Operator):
                 {"INFO"}, f"Converted {obj.name} to a {SOLLUMZ_UI_NAMES[SollumType.DRAWABLE_MODEL]}.")
 
         return {"FINISHED"}
-
-
-class SOLLUMZ_OT_BONE_FLAGS_NewItem(SOLLUMZ_OT_base, bpy.types.Operator):
-    bl_idname = "sollumz.bone_flags_new_item"
-    bl_label = "Add a new item"
-    bl_action = "Add a Bone Flag"
-
-    def run(self, context):
-        bone = context.active_bone
-        bone.bone_properties.flags.add()
-        self.message(f"Added bone flag to bone: {bone.name}")
-        return True
-
-
-class SOLLUMZ_OT_BONE_FLAGS_DeleteItem(SOLLUMZ_OT_base, bpy.types.Operator):
-    bl_idname = "sollumz.bone_flags_delete_item"
-    bl_label = "Deletes an item"
-    bl_action = "Delete a Bone Flag"
-
-    @classmethod
-    def poll(cls, context):
-        return context.active_bone is not None and context.active_bone.bone_properties.flags
-
-    def run(self, context):
-        bone = context.active_bone
-        list = bone.bone_properties.flags
-        index = bone.bone_properties.ul_index
-        list.remove(index)
-        bone.bone_properties.ul_index = min(
-            max(0, index - 1), len(list) - 1)
-        self.message(f"Deleted bone flag from: {bone.name}")
-        return True
 
 
 class SOLLUMZ_OT_apply_bone_properties_to_armature(SOLLUMZ_OT_base, bpy.types.Operator):
@@ -299,23 +268,6 @@ class SOLLUMZ_OT_scale_bone_flags(bpy.types.Operator, BonePoseModeRestrictedHelp
         return {'FINISHED'}
 
 
-class SOLLUMZ_OT_limit_bone_flags(bpy.types.Operator, BonePoseModeRestrictedHelper):
-    bl_idname = "sollumz.limitboneflags"
-    bl_label = "Add Limit Flags"
-    bl_description = "Removes selected bone flags and adds the proper limit flags for custom bone locations"
-
-    def execute(self, context):
-        selected_bones = context.selected_pose_bones
-        for pBone in selected_bones:
-            new_flag = pBone.bone.bone_properties.flags.add()
-            new_flag.name = "LimitRotation"
-            new_flag = pBone.bone.bone_properties.flags.add()
-            new_flag.name = "LimitTranslation"
-        tag_redraw(context)
-        self.report({'INFO'}, f'Limit Flags Added for {len(selected_bones)} bone(s)')
-        return {'FINISHED'}
-
-
 class OperatorMoveShaderUpBase:
     move_to_top = False
 
@@ -405,7 +357,7 @@ class SOLLUMZ_OT_move_shader_to_bottom(OperatorMoveShaderDownBase, bpy.types.Ope
 class SOLLUMZ_OT_order_shaders(bpy.types.Operator):
     bl_idname = "sollumz.order_shaders"
     bl_label = "Order Shaders"
-    bl_options = {"REGISTER", "UNDO"}
+    bl_options = {"UNDO"}
     bl_description = "Determine shader rendering order"
 
     def draw(self, context):
@@ -429,6 +381,8 @@ class SOLLUMZ_OT_order_shaders(bpy.types.Operator):
         aobj = context.active_object
         self.apply_order(aobj)
 
+        shader_order = aobj.drawable_properties.shader_order
+        shader_order.order_items.clear()
         return {"FINISHED"}
 
     def invoke(self, context, event):
@@ -437,21 +391,25 @@ class SOLLUMZ_OT_order_shaders(bpy.types.Operator):
         aobj = context.active_object
         self.add_initial_items(aobj)
 
-        return wm.invoke_props_dialog(self, width=800)
+        return wm.invoke_props_dialog(self, width=1000)
 
     def add_initial_items(self, drawable_obj: bpy.types.Object):
         """Add initial shader sort items based on materials from drawable_obj"""
         shader_order: DrawableShaderOrder = drawable_obj.drawable_properties.shader_order
-        mats = get_sollumz_materials(drawable_obj)
+        mat_to_model = {}
+        mats = get_sollumz_materials(drawable_obj, out_material_to_models=mat_to_model)
         self.validate_indices(mats)
 
         shader_order.order_items.clear()
 
         for mat in mats:
+            s = shadermats_by_filename.get(mat.shader_properties.filename, None)
             item = shader_order.order_items.add()
             item.index = mat.shader_properties.index
+            item.material = mat
             item.name = mat.name
-            item.filename = mat.shader_properties.filename
+            item.shader = (s and s.ui_name) or mat.shader_properties.filename
+            item.user_models = ", ".join(o.name for o in mat_to_model[mat])
 
     def validate_indices(self, mats: list[bpy.types.Material]):
         """Ensure valid and unique shader indices (in-case user changed them or blend file is from previous version)"""
@@ -469,15 +427,8 @@ class SOLLUMZ_OT_order_shaders(bpy.types.Operator):
     def apply_order(self, drawable_obj: bpy.types.Object):
         """Set material shader indices based on shader order"""
         shader_order: DrawableShaderOrder = drawable_obj.drawable_properties.shader_order
-        mats = get_sollumz_materials(drawable_obj)
-
-        if len(shader_order.order_items) != len(mats):
-            self.report(
-                {"ERROR"}, "Failed to apply order, shader collection size mismatch!")
-            return {"CANCELLED"}
-
-        for i, mat in enumerate(mats):
-            mat.shader_properties.index = shader_order.order_items[i].index
+        for order_item in shader_order.order_items:
+            order_item.material.shader_properties.index = order_item.index
 
         return {"FINISHED"}
 
@@ -551,109 +502,6 @@ class SOLLUMZ_OT_set_correct_child_of_space(bpy.types.Operator):
         set_child_of_constraint_space(constraint)
 
         return {"FINISHED"}
-
-
-class SOLLUMZ_OT_auto_lod(bpy.types.Operator):
-    bl_idname = "sollumz.auto_lod"
-    bl_label = "Generate LODs"
-    bl_options = {"REGISTER", "UNDO"}
-    bl_description = (
-        "Generate drawable model LODs via decimate modifier. Starts from the selected reference mesh, generating a "
-        "new decimated mesh for each selected LOD level"
-    )
-
-    @classmethod
-    def poll(self, context):
-        return context.active_object is not None and context.active_object.sollum_type == SollumType.DRAWABLE_MODEL
-
-    def execute(self, context: Context):
-        aobj = context.active_object
-        use_active_ref = context.scene.sollumz_auto_lod_use_active_lod_as_ref
-        ref_mesh = None
-        if use_active_ref:
-            # Use the currently visible LOD mesh of the active object
-            ref_mesh = aobj.sz_lods.active_lod.mesh
-        else:
-            ref_mesh = context.scene.sollumz_auto_lod_ref_mesh
-
-        if ref_mesh is None:
-            self.report(
-                {"INFO"}, "No reference mesh specified! You must specify a mesh to use as the highest LOD level!")
-            return {"CANCELLED"}
-
-        lods = self.get_selected_lods_sorted(context)
-
-        if not lods:
-            return {"CANCELLED"}
-
-        obj_lods: LODLevels = aobj.sz_lods
-
-        decimate_step = context.scene.sollumz_auto_lod_decimate_step
-        last_mesh = ref_mesh
-
-        previous_mode = aobj.mode
-        previous_lod_level = obj_lods.active_lod_level
-        previous_lod_mesh = obj_lods.get_lod(previous_lod_level).mesh
-
-        # Isolate selection to avoid multi-object edit mode affecting other objects
-        orig_selection = list(context.selected_objects)
-        orig_active = context.view_layer.objects.active
-        bpy.ops.object.select_all(action="DESELECT")
-        aobj.select_set(True)
-        context.view_layer.objects.active = aobj
-
-        for lod_level in lods:
-            # If using active as reference and we're targeting that same LOD, skip (don't overwrite manual edits)
-            if use_active_ref and lod_level == aobj.sz_lods.active_lod_level:
-                continue
-            bpy.ops.object.mode_set(mode="OBJECT")  # make sure we are in object mode before switching LODs
-            mesh = last_mesh.copy()
-            mesh.name = self.get_lod_mesh_name(aobj.name, lod_level)
-
-            obj_lods.get_lod(lod_level).mesh = mesh
-            obj_lods.active_lod_level = lod_level
-
-            bpy.ops.object.mode_set(mode="EDIT")
-            bpy.ops.mesh.select_all(action="SELECT")
-            # Pre-steps
-            if context.scene.sollumz_auto_lod_pre_merge_by_distance:
-                # Use a small distance; users can adjust after if needed
-                bpy.ops.mesh.remove_doubles(threshold=0.0001)
-            if context.scene.sollumz_auto_lod_pre_reset_vectors:
-                bpy.ops.mesh.normals_make_consistent(inside=False)
-            if context.scene.sollumz_auto_lod_pre_clear_custom_normals:
-                try:
-                    bpy.ops.mesh.customdata_custom_splitnormals_clear()
-                except Exception:
-                    pass
-            bpy.ops.mesh.decimate(ratio=1.0 - decimate_step)
-
-            last_mesh = mesh
-
-        bpy.ops.object.mode_set(mode="OBJECT")
-        # Restore the previously active LOD's mesh if that level wasn't selected
-        if previous_lod_level not in lods and previous_lod_mesh is not None:
-            prev_lod = obj_lods.get_lod(previous_lod_level)
-            if prev_lod.mesh is not previous_lod_mesh:
-                prev_lod.mesh = previous_lod_mesh
-        obj_lods.active_lod_level = previous_lod_level
-
-        bpy.ops.object.mode_set(mode=previous_mode)
-
-        # Restore original selection
-        bpy.ops.object.select_all(action="DESELECT")
-        for obj in orig_selection:
-            obj.select_set(True)
-        if orig_active is not None:
-            context.view_layer.objects.active = orig_active
-
-        return {"FINISHED"}
-
-    def get_lod_mesh_name(self, obj_name: str, lod_level: LODLevel):
-        return f"{obj_name}.{SOLLUMZ_UI_NAMES[lod_level].lower()}"
-
-    def get_selected_lods_sorted(self, context: Context) -> tuple[LODLevel]:
-        return tuple(lod for lod in LODLevel if lod in context.scene.sollumz_auto_lod_levels)
 
 
 class SOLLUMZ_OT_auto_lod_multi(bpy.types.Operator):
@@ -767,7 +615,6 @@ class SOLLUMZ_OT_auto_lod_multi(bpy.types.Operator):
 
         self.report({"INFO"}, f"Generated LODs for {processed} object(s){' (skipped ' + str(skipped) + ' without Very High LOD)' if skipped else ''}.")
         return {"FINISHED"}
-
 class SOLLUMZ_OT_extract_lods(bpy.types.Operator):
     bl_idname = "sollumz.extract_lods"
     bl_label = "Extract LODs"
@@ -824,7 +671,7 @@ class SOLLUMZ_OT_uv_maps_rename_by_order(bpy.types.Operator):
 
     @classmethod
     def poll(self, context):
-        return context.active_object is not None and context.active_object.sollum_type == SollumType.DRAWABLE_MODEL
+        return context.active_object is not None
 
     def execute(self, context: bpy.types.Context):
         selected_meshes = [obj for obj in context.selected_objects if obj.type == "MESH"]
@@ -968,7 +815,7 @@ class SOLLUMZ_OT_uv_maps_add_missing(bpy.types.Operator):
 
     @classmethod
     def poll(self, context):
-        return context.active_object is not None and context.active_object.sollum_type == SollumType.DRAWABLE_MODEL
+        return context.active_object is not None
 
     def execute(self, context: bpy.types.Context):
         selected_meshes = [obj for obj in context.selected_objects if obj.type == "MESH"]
@@ -993,7 +840,7 @@ class SOLLUMZ_OT_color_attrs_rename_by_order(bpy.types.Operator):
 
     @classmethod
     def poll(self, context):
-        return context.active_object is not None and context.active_object.sollum_type == SollumType.DRAWABLE_MODEL
+        return context.active_object is not None
 
     def execute(self, context: bpy.types.Context):
         selected_meshes = [obj for obj in context.selected_objects if obj.type == "MESH"]
@@ -1018,7 +865,7 @@ class SOLLUMZ_OT_color_attrs_add_missing(bpy.types.Operator):
 
     @classmethod
     def poll(self, context):
-        return context.active_object is not None and context.active_object.sollum_type == SollumType.DRAWABLE_MODEL
+        return context.active_object is not None
 
     def execute(self, context: bpy.types.Context):
         selected_meshes = [obj for obj in context.selected_objects if obj.type == "MESH"]

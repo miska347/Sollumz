@@ -27,6 +27,7 @@ from .sollumz_properties import (
 from .tools.blenderhelper import lod_level_enum_flag_prop_factory
 from .sollumz_helper import find_sollumz_parent
 from .icons import icon_manager
+from .shared.object_hierarchy import ObjectHierarchySnapshot
 
 
 class LODLevelProps(PropertyGroup):
@@ -120,6 +121,9 @@ class LODLevelProps(PropertyGroup):
 
 class LODLevels(PropertyGroup):
     def on_lod_level_update(self, context: Context):
+        if self.disable_active_lod_level_callback:
+            return
+
         prev_lod = self.get_lod(self.active_lod_level_prev)
         curr_lod = self.get_lod(self.active_lod_level)
         prev_lod.on_lod_level_exit()
@@ -133,6 +137,8 @@ class LODLevels(PropertyGroup):
     medium: PointerProperty(type=LODLevelProps)
     low: PointerProperty(type=LODLevelProps)
     very_low: PointerProperty(type=LODLevelProps)
+
+    disable_active_lod_level_callback: BoolProperty(default=False)
 
     @property
     def active_lod(self) -> LODLevelProps:
@@ -174,11 +180,21 @@ class SOLLUMZ_OT_set_lod_level(Operator):
         return active_obj is not None and active_obj.mode == "OBJECT" and find_sollumz_parent(active_obj)
 
     def execute(self, context):
+        objs = set()
+
         active_obj = context.view_layer.objects.active
-        obj = find_sollumz_parent(active_obj)
-        set_all_lods(obj, LODLevel(self.lod_level))
+        objs.add(find_sollumz_parent(active_obj))
+
+        for selected_obj in context.view_layer.objects.selected:
+            if obj := find_sollumz_parent(selected_obj):
+                objs.add(obj)
+
+        lod_level = LODLevel(self.lod_level)
+        for obj in objs:
+            set_all_lods(obj, lod_level)
 
         return {"FINISHED"}
+
 
 class SOLLUMZ_OT_hide_object(Operator):
     bl_idname = "sollumz.hide_object"
@@ -191,18 +207,28 @@ class SOLLUMZ_OT_hide_object(Operator):
         return active_obj is not None and active_obj.mode == "OBJECT" and find_sollumz_parent(active_obj)
 
     def execute(self, context):
+        objs = set()
+
         active_obj = context.view_layer.objects.active
-        obj = find_sollumz_parent(active_obj)
+        objs.add(find_sollumz_parent(active_obj))
 
-        do_hide = not obj.hide_get()
-        obj.hide_set(do_hide)
+        for selected_obj in context.view_layer.objects.selected:
+            if obj := find_sollumz_parent(selected_obj):
+                objs.add(obj)
 
-        for child in obj.children_recursive:
-            active_lod = child.sz_lods.active_lod
-            if child.sollum_type != SollumType.DRAWABLE_MODEL or active_lod.mesh is None:
-                continue
+        hierarchy = ObjectHierarchySnapshot.for_scene()
+        view_layer_objects = context.view_layer.objects
+        for obj in objs:
+            do_hide = not obj.hide_get()
+            obj.hide_set(do_hide)
 
-            child.hide_set(do_hide)
+            for child in hierarchy.get_children_recursive(obj):
+                active_lod = child.sz_lods.active_lod
+                if child.sollum_type != SollumType.DRAWABLE_MODEL or active_lod.mesh is None:
+                    continue
+
+                if child.name in view_layer_objects:
+                    child.hide_set(do_hide)
 
         return {"FINISHED"}
 
@@ -353,7 +379,7 @@ def set_all_lods(obj: bpy.types.Object, lod_level: LODLevel):
     """Set LOD levels of all of children of ``obj``"""
     obj.hide_set(False)
 
-    for child in obj.children_recursive:
+    for child in ObjectHierarchySnapshot.for_scene().get_children_recursive(obj):
         if child.type == "MESH" and child.mode == "OBJECT" and child.sollum_type == SollumType.DRAWABLE_MODEL:
             child.sz_lods.active_lod_level = lod_level
             continue
@@ -365,15 +391,18 @@ def operates_on_lod_level(func: Callable):
     and will set it back to the original LOD level at the end."""
     def wrapper(model_obj: bpy.types.Object, lod_level: LODLevel, *args, **kwargs):
         current_lod_level = model_obj.sz_lods.active_lod_level
+        needs_to_change_lods = current_lod_level != lod_level
 
-        was_hidden = model_obj.hide_get()
-        model_obj.sz_lods.active_lod_level = lod_level
+        if needs_to_change_lods:
+            was_hidden = model_obj.hide_get()
+            model_obj.sz_lods.active_lod_level = lod_level
 
         res = func(model_obj, lod_level, *args, **kwargs)
 
-        # Set the lod level back to what it was
-        model_obj.sz_lods.active_lod_level = current_lod_level
-        model_obj.hide_set(was_hidden)
+        if needs_to_change_lods:
+            # Set the lod level back to what it was
+            model_obj.sz_lods.active_lod_level = current_lod_level
+            model_obj.hide_set(was_hidden)
 
         return res
 

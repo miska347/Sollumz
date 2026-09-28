@@ -2,6 +2,7 @@ import bpy
 from bpy.types import (
     Object,
     Scene,
+    Material,
 )
 from bpy.props import (
     BoolProperty,
@@ -10,18 +11,17 @@ from bpy.props import (
     FloatVectorProperty,
     CollectionProperty,
     PointerProperty,
+    EnumProperty,
 )
 import os
 import math
 from typing import Optional
 from ..tools.blenderhelper import lod_level_enum_flag_prop_factory
 from ..sollumz_helper import find_sollumz_parent
-from ..cwxml.light_preset import LightPresetsFile
-from ..cwxml.shader_preset import ShaderPresetsFile
-from ..sollumz_properties import SOLLUMZ_UI_NAMES, items_from_enums, LODLevel, LODLevelEnumItems, SollumType, LightType, FlagPropertyGroup, TimeFlagsMixin
+from ..sollumz_properties import SOLLUMZ_UI_NAMES, items_from_enums, LODLevel, LODLevelEnumItems, SollumType, LightType, MaterialType, FlagPropertyGroup, TimeFlagsMixin
 from ..ydr.shader_materials import shadermats, shadermats_by_filename
 from .render_bucket import RenderBucket, RenderBucketEnumItems
-from .light_flashiness import Flashiness, LightFlashinessEnumItems
+from .light_flashiness import LightFlashiness, LightFlashinessEnumItems
 from bpy.app.handlers import persistent
 from bpy.path import basename
 
@@ -29,8 +29,10 @@ from bpy.path import basename
 class ShaderOrderItem(bpy.types.PropertyGroup):
     # For drawable shader order list
     index: bpy.props.IntProperty(min=0)
+    material: bpy.props.PointerProperty(type=Material)
     name: bpy.props.StringProperty()
-    filename: bpy.props.StringProperty()
+    shader: bpy.props.StringProperty()
+    user_models: bpy.props.StringProperty() # models using this shader, to display in UI
 
 
 class DrawableShaderOrder(bpy.types.PropertyGroup):
@@ -146,6 +148,8 @@ class SkinnedDrawableModelProperties(bpy.types.PropertyGroup):
             return self.low
         elif lod_level == LODLevel.VERYLOW:
             return self.very_low
+        else:
+            assert False, f"Unknown LOD level '{lod_level}'"
 
 
 class ShaderProperties(bpy.types.PropertyGroup):
@@ -171,6 +175,21 @@ class TextureProperties(bpy.types.PropertyGroup):
 
 class BoneFlag(bpy.types.PropertyGroup):
     name: bpy.props.StringProperty(default="")
+
+
+BoneFlagEnumItems = (
+    ("RotX", "RotX", "", 0x1),
+    ("RotY", "RotY", "", 0x2),
+    ("RotZ", "RotZ", "", 0x4),
+
+    ("TransX", "TransX", "", 0x10),
+    ("TransY", "TransY", "", 0x20),
+    ("TransZ", "TransZ", "", 0x40),
+
+    ("ScaleX", "ScaleX", "", 0x100),
+    ("ScaleY", "ScaleY", "", 0x200),
+    ("ScaleZ", "ScaleZ", "", 0x400),
+)
 
 
 class BoneProperties(bpy.types.PropertyGroup):
@@ -223,15 +242,43 @@ class BoneProperties(bpy.types.PropertyGroup):
         self.manual_tag = value
         self.use_manual_tag = value != self.calc_tag()
 
-    tag: bpy.props.IntProperty(
+    def get_flags_enum(self):
+        flag_set = set(f.name for f in self.flags)
+        flag_int = 0
+        for name, _, _, value in BoneFlagEnumItems:
+            if name in flag_set:
+                flag_int |= value
+
+        return flag_int
+
+    def set_flags_enum(self, flag_int: int):
+        flags = []
+        for name, _, _, value in BoneFlagEnumItems:
+            if (flag_int & value) != 0:
+                flags.append(name)
+
+        self.flags.clear()
+        for flag_name in flags:
+            new_flag = self.flags.add()
+            new_flag.name = flag_name
+
+    tag: IntProperty(
         name="Tag", description="Unique value that identifies this bone in the armature",
-        get=get_tag, set=set_tag, default=0, min=0, max=0xFFFF)
-    manual_tag: bpy.props.IntProperty(name="Manual Tag", default=0, min=0, max=0xFFFF)
-    use_manual_tag: bpy.props.BoolProperty(
+        get=get_tag, set=set_tag, default=0, min=0, max=0xFFFF
+    )
+    manual_tag: IntProperty(name="Manual Tag", default=0, min=0, max=0xFFFF)
+    use_manual_tag: BoolProperty(
         name="Use Manual Tag", description="Specify a tag instead of auto-calculating it",
         default=False)
-    flags: bpy.props.CollectionProperty(type=BoneFlag)
-    ul_index: bpy.props.IntProperty(name="UIListIndex", default=0)
+
+    # Just a wrapper around the flags collection property due to backwards compatibility, but it really doesn't make
+    # sense to have a collection for this
+    flags_enum: EnumProperty(
+        items=BoneFlagEnumItems, name="Flags", options={"ENUM_FLAG"},
+        get=get_flags_enum, set=set_flags_enum
+    )
+    flags: CollectionProperty(type=BoneFlag)
+    ul_index: IntProperty(name="UIListIndex", default=0)
 
 
 class ShaderMaterial(bpy.types.PropertyGroup):
@@ -260,7 +307,7 @@ LIGHT_INTENSITY_SCALE_FACTOR = 500
 
 class LightProperties(bpy.types.PropertyGroup):
     flashiness: bpy.props.EnumProperty(
-        name="Flashiness", items=LightFlashinessEnumItems, default=Flashiness.CONSTANT.name
+        name="Flashiness", items=LightFlashinessEnumItems, default=LightFlashiness.CONSTANT.name
     )
     group_id: bpy.props.IntProperty(name="Group ID")
     culling_plane_normal: bpy.props.FloatVectorProperty(name="Culling Plane Normal", subtype="XYZ")
@@ -380,11 +427,6 @@ class LightProperties(bpy.types.PropertyGroup):
         subtype="ANGLE",
         min=0.0, max=math.pi / 2,
     )
-
-
-class PresetEntry(bpy.types.PropertyGroup):
-    index: bpy.props.IntProperty("Index")
-    name: bpy.props.StringProperty("Name")
 
 
 class LightTimeFlags(TimeFlagsMixin, bpy.types.PropertyGroup):
@@ -574,72 +616,9 @@ def set_light_type(self, value):
         self.is_capsule = False
 
 
-def get_light_presets_path() -> str:
-    from ..sollumz_preferences import get_config_directory_path
-    return os.path.join(get_config_directory_path(), "light_presets.xml")
-
-
-def get_shader_presets_path() -> str:
-    from ..sollumz_preferences import get_config_directory_path
-    return os.path.join(get_config_directory_path(), "shader_presets.xml")
-
-
-_default_light_presets_path = os.path.join(os.path.dirname(__file__), "light_presets.xml")
-
-_default_shader_presets_path = os.path.join(os.path.dirname(__file__), "shader_presets.xml")
-
-
-def get_default_light_presets_path() -> str:
-    return _default_light_presets_path
-
-
-def get_default_shader_presets_path() -> str:
-    return _default_shader_presets_path
-
-
-light_presets = LightPresetsFile()
-
-shader_presets = ShaderPresetsFile()
-
-
-def load_light_presets():
-    bpy.context.window_manager.sz_light_presets.clear()
-
-    path = get_light_presets_path()
-    if not os.path.exists(path):
-        path = get_default_light_presets_path()
-        if not os.path.exists(path):
-            return
-
-    file = LightPresetsFile.from_xml_file(path)
-    light_presets.presets = file.presets
-    for index, preset in enumerate(light_presets.presets):
-        item = bpy.context.window_manager.sz_light_presets.add()
-        item.name = str(preset.name)
-        item.index = index
-
-
-def load_shader_presets():
-    bpy.context.window_manager.sz_shader_presets.clear()
-
-    path = get_shader_presets_path()
-    if not os.path.exists(path):
-        path = get_default_shader_presets_path()
-        if not os.path.exists(path):
-            return
-
-    file = ShaderPresetsFile.from_xml_file(path)
-    shader_presets.presets = file.presets
-    for index, preset in enumerate(shader_presets.presets):
-        item = bpy.context.window_manager.sz_shader_presets.add()
-        item.name = str(preset.name)
-        item.index = index
-
-
 def get_texture_name(self):
-    if self.image:
-        return os.path.splitext(basename(self.image.filepath))[0]
-    return ""
+    from ..ytd.properties import get_texture_name as impl
+    return impl(self.image)
 
 
 def get_model_properties(model_obj: bpy.types.Object, lod_level: LODLevel) -> DrawableModelProperties:
@@ -668,13 +647,28 @@ def refresh_ui_collections():
         item.name = mat.name
         item.search_name = mat.ui_name.replace(" ", "").replace("_", "")
 
-    load_light_presets()
-    load_shader_presets()
-
 
 @persistent
 def on_blend_file_loaded(_):
     refresh_ui_collections()
+
+
+@persistent
+def on_depsgraph_update_post(_scene, depsgraph):
+    # Images assigned to non-color texture parameters (e.g. bump samplers) must never be color-managed.
+    from .ydrimport import is_non_color_texture  # imported here to avoid a circular import
+
+    for update in depsgraph.updates:
+        mat = update.id.original
+        if not isinstance(mat, Material) or mat.sollum_type != MaterialType.SHADER or mat.node_tree is None:
+            continue
+
+        shader_filename = mat.shader_properties.filename
+        for node in mat.node_tree.nodes:
+            if (isinstance(node, bpy.types.ShaderNodeTexImage) and node.is_sollumz and
+                    node.image is not None and not node.image.colorspace_settings.is_data and
+                    is_non_color_texture(shader_filename, node.name)):
+                node.image.colorspace_settings.is_data = True
 
 
 def register():
@@ -769,13 +763,6 @@ def register():
     # LOD selection settings for LOD tools
     bpy.types.Scene.sollumz_delete_lods_levels = lod_level_enum_flag_prop_factory()
     bpy.types.Scene.sollumz_deselect_lods_levels = lod_level_enum_flag_prop_factory()
-
-    bpy.types.WindowManager.sz_light_preset_index = bpy.props.IntProperty(name="Light Preset Index")
-    bpy.types.WindowManager.sz_light_presets = bpy.props.CollectionProperty(type=PresetEntry, name="Light Presets")
-
-    bpy.types.WindowManager.sz_shader_preset_index = bpy.props.IntProperty(name="Shader Preset Index")
-    bpy.types.WindowManager.sz_shader_presets = bpy.props.CollectionProperty(type=PresetEntry, name="Shader Presets")
-
     bpy.types.Scene.sollumz_extract_lods_levels = lod_level_enum_flag_prop_factory()
     bpy.types.Scene.sollumz_extract_lods_parent_type = bpy.props.EnumProperty(name="Parent Type", items=(
         ("sollumz_extract_lods_parent_type_object", "Object", "Parent to an Object"),
@@ -905,6 +892,7 @@ def register():
     # )
 
     bpy.app.handlers.load_post.append(on_blend_file_loaded)
+    bpy.app.handlers.depsgraph_update_post.append(on_depsgraph_update_post)
     refresh_ui_collections()
 
 
@@ -923,10 +911,6 @@ def unregister():
     del bpy.types.Light.time_flags
     del bpy.types.Light.light_flags
     del bpy.types.Light.is_capsule
-    del bpy.types.WindowManager.sz_light_presets
-    del bpy.types.WindowManager.sz_light_preset_index
-    del bpy.types.WindowManager.sz_shader_presets
-    del bpy.types.WindowManager.sz_shader_preset_index
     del bpy.types.Scene.create_seperate_drawables
     del bpy.types.Scene.auto_create_embedded_col
     del bpy.types.Scene.center_drawable_to_selection
@@ -975,3 +959,4 @@ def unregister():
     # del bpy.types.WindowManager.sz_ui_cloth_diag_bindings_visualize
 
     bpy.app.handlers.load_post.remove(on_blend_file_loaded)
+    bpy.app.handlers.depsgraph_update_post.remove(on_depsgraph_update_post)

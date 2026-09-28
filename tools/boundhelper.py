@@ -9,10 +9,11 @@ from ..tools.meshhelper import (
     create_disc,
     create_plane,
 )
-from ..ybn.properties import load_flag_presets, flag_presets, BoundFlags
+from ..ybn.properties import BoundFlags
 from .blenderhelper import create_blender_object, create_empty_object, remove_number_suffix
 from mathutils import Vector, Matrix
 from math import radians
+from ..shared.object_hierarchy import ObjectHierarchySnapshot
 
 
 def create_bound_shape(bound_type: SollumType):
@@ -101,21 +102,21 @@ def create_bound_plane():
     return bound_obj
 
 
-def convert_objs_to_composites(objs: list[bpy.types.Object], bound_child_type: SollumType, flag_preset_index: Optional[int] = None):
+def convert_objs_to_composites(objs: list[bpy.types.Object], bound_child_type: SollumType, flag_preset_name: Optional[str] = None):
     """Convert each object in ``objs`` to a Bound Composite."""
     for obj in objs:
-        convert_obj_to_composite(obj, bound_child_type, flag_preset_index)
+        convert_obj_to_composite(obj, bound_child_type, flag_preset_name)
 
 
-def convert_objs_to_single_composite(objs: list[bpy.types.Object], bound_child_type: SollumType, flag_preset_index: Optional[int] = None):
+def convert_objs_to_single_composite(objs: list[bpy.types.Object], bound_child_type: SollumType, flag_preset_name: Optional[str] = None):
     """Create a single composite from all ``objs``."""
     composite_obj = create_empty_object(SollumType.BOUND_COMPOSITE)
     for obj in objs:
         if bound_child_type == SollumType.BOUND_GEOMETRY:
-            convert_obj_to_geometry(obj, flag_preset_index)
+            convert_obj_to_geometry(obj, flag_preset_name)
             obj.parent = composite_obj
         else:
-            bvh_obj = convert_obj_to_bvh(obj, flag_preset_index)
+            bvh_obj = convert_obj_to_bvh(obj, flag_preset_name)
             bvh_obj.parent = composite_obj
             bvh_obj.location = obj.location
             obj.location = Vector()
@@ -124,7 +125,9 @@ def convert_objs_to_single_composite(objs: list[bpy.types.Object], bound_child_t
 
 def center_composite_to_children(composite_obj: bpy.types.Object):
     child_objs = [
-        child for child in composite_obj.children if child.sollum_type in BOUND_TYPES]
+        child for child in ObjectHierarchySnapshot.for_scene().get_children(composite_obj)
+        if child.sollum_type in BOUND_TYPES
+    ]
 
     center = Vector()
 
@@ -139,17 +142,17 @@ def center_composite_to_children(composite_obj: bpy.types.Object):
         obj.location -= center
 
 
-def convert_obj_to_composite(obj: bpy.types.Object, bound_child_type: SollumType, flag_preset_index: Optional[int] = None):
+def convert_obj_to_composite(obj: bpy.types.Object, bound_child_type: SollumType, flag_preset_name: Optional[str] = None):
     composite_obj = create_empty_object(SollumType.BOUND_COMPOSITE)
     composite_obj.location = obj.location
     composite_obj.parent = obj.parent
     name = obj.name
 
     if bound_child_type == SollumType.BOUND_GEOMETRY:
-        convert_obj_to_geometry(obj, flag_preset_index)
+        convert_obj_to_geometry(obj, flag_preset_name)
         obj.parent = composite_obj
     else:
-        bvh_obj = convert_obj_to_bvh(obj, flag_preset_index)
+        bvh_obj = convert_obj_to_bvh(obj, flag_preset_name)
         bvh_obj.parent = composite_obj
 
     composite_obj.name = name
@@ -158,15 +161,15 @@ def convert_obj_to_composite(obj: bpy.types.Object, bound_child_type: SollumType
     return composite_obj
 
 
-def convert_obj_to_geometry(obj: bpy.types.Object, flag_preset_index: Optional[int] = None):
+def convert_obj_to_geometry(obj: bpy.types.Object, flag_preset_name: Optional[str] = None):
     obj.sollum_type = SollumType.BOUND_GEOMETRY
     obj.name = f"{remove_number_suffix(obj.name)}.bound_geom"
 
-    if flag_preset_index is not None:
-        apply_flag_preset(obj, flag_preset_index)
+    if flag_preset_name:
+        apply_flag_preset(obj, flag_preset_name)
 
 
-def convert_obj_to_bvh(obj: bpy.types.Object, flag_preset_index: Optional[int] = None):
+def convert_obj_to_bvh(obj: bpy.types.Object, flag_preset_name: Optional[str] = None):
     obj_name = remove_number_suffix(obj.name)
 
     bvh_obj = create_empty_object(SollumType.BOUND_GEOMETRYBVH)
@@ -176,23 +179,19 @@ def convert_obj_to_bvh(obj: bpy.types.Object, flag_preset_index: Optional[int] =
     obj.name = f"{obj_name}.poly_mesh"
     obj.parent = bvh_obj
 
-    if flag_preset_index is not None:
-        apply_flag_preset(bvh_obj, flag_preset_index)
+    if flag_preset_name:
+        apply_flag_preset(bvh_obj, flag_preset_name)
 
     return bvh_obj
 
 
-def apply_flag_preset(obj: bpy.types.Object, preset_index: int, reload_presets: bool = True) -> bool:
-    if reload_presets:
-        load_flag_presets()
+def apply_flag_preset(obj: bpy.types.Object, preset_name: str) -> bool:
+    """Apply a named flag preset to ``obj``. Returns True on success."""
+    from ..shared.presets import store as preset_store
+    from ..ybn.gta5.presets.flag import FLAG_PRESET_CATEGORY
 
-    if preset_index < 0 or preset_index >= len(flag_presets.presets):
+    preset = preset_store.find_preset(FLAG_PRESET_CATEGORY, preset_name)
+    if preset is None:
         return False
-
-    preset = flag_presets.presets[preset_index]
-
-    for flag_name in BoundFlags.__annotations__.keys():
-        obj.composite_flags1[flag_name] = flag_name in preset.flags1
-        obj.composite_flags2[flag_name] = flag_name in preset.flags2
-
+    FLAG_PRESET_CATEGORY.apply(obj, preset.get("data", {}))
     return True

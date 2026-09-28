@@ -19,7 +19,8 @@ from typing import Union, Optional, TYPE_CHECKING
 from collections.abc import Iterator
 from enum import Enum, IntEnum
 from ...tools.utils import get_list_item
-from ...ydr.light_flashiness import Flashiness, LightFlashinessEnumItems
+from ...ydr.light_flashiness import LightFlashiness, LightFlashinessEnumItems
+from szio import gta5 as iogta5
 
 if TYPE_CHECKING:
     from .ytyp import ArchetypeProperties
@@ -40,6 +41,26 @@ class ExtensionType(str, Enum):
     PROC_OBJECT = "CExtensionDefProcObject"
     EXPRESSION = "CExtensionDefExpression"
     LIGHT_EFFECT = "CExtensionDefLightEffect"
+
+
+EXTENSION_DEF_CLASS_TO_TYPE = {
+    iogta5.ExtensionDoor: ExtensionType.DOOR,
+    iogta5.ExtensionParticleEffect: ExtensionType.PARTICLE,
+    iogta5.ExtensionAudioCollisionSettings: ExtensionType.AUDIO_COLLISION,
+    iogta5.ExtensionAudioEmitter: ExtensionType.AUDIO_EMITTER,
+    iogta5.ExtensionExplosionEffect: ExtensionType.EXPLOSION_EFFECT,
+    iogta5.ExtensionLadder: ExtensionType.LADDER,
+    iogta5.ExtensionBuoyancy: ExtensionType.BUOYANCY,
+    iogta5.ExtensionLightShaft: ExtensionType.LIGHT_SHAFT,
+    iogta5.ExtensionSpawnPoint: ExtensionType.SPAWN_POINT,
+    iogta5.ExtensionSpawnPointOverride: ExtensionType.SPAWN_POINT_OVERRIDE,
+    iogta5.ExtensionWindDisturbance: ExtensionType.WIND_DISTURBANCE,
+    iogta5.ExtensionProcObject: ExtensionType.PROC_OBJECT,
+    iogta5.ExtensionExpression: ExtensionType.EXPRESSION,
+    iogta5.ExtensionLightEffect: ExtensionType.LIGHT_EFFECT,
+}
+
+EXTENSION_TYPE_TO_DEF_CLASS = {v: k for k, v in EXTENSION_DEF_CLASS_TO_TYPE.items()}
 
 
 def ExtensionTypeEnumItems(self, context: Optional[Context]):
@@ -250,6 +271,10 @@ class ExtensionWithBoneTagMixin:
 
 
 class DoorExtensionProperties(BaseExtensionProperties, PropertyGroup):
+    __sz_preset_capture__ = (
+        "enable_limit_angle", "starts_locked", "can_break", "limit_angle", "door_target_ratio", "audio_hash"
+    )
+
     enable_limit_angle: BoolProperty(name="Enable Limit Angle")
     starts_locked: BoolProperty(name="Starts Locked")
     can_break: BoolProperty(name="Can Break")
@@ -289,20 +314,22 @@ ParticleFxTypeEnumItems = tuple(label and (enum.name, f"{label} ({enum.value})",
     (
         ParticleFxType.SHOT,
         "Shot",
-        "Trigger when this object is shot at. Valid FX names are defined in the ENTITYFX_SHOT_PTFX block within "
+        "Trigger when this object is shot at. If no bone is set (or bone tag is -1), the effect triggers on any shot "
+        "bone; otherwise, only on the specified bone. Valid FX names are defined in the ENTITYFX_SHOT_PTFX block within "
         "entityfx.dat"
     ),
     (
         ParticleFxType.BREAK,
         "Break",
-        "Fragments only, trigger when this fragment breaks apart. Valid FX names are defined in the "
+        "Fragments only, trigger when this fragment breaks apart. If no bone is set (or bone tag is -1), the effect "
+        "triggers on any broken bone; otherwise, only on the specified bone. Valid FX names are defined in the "
         "FRAGMENTFX_BREAK_PTFX block within entityfx.dat"
-
     ),
     (
         ParticleFxType.DESTROY,
         "Destroy",
-        "Fragments only, trigger when this fragment is destroyed. Valid FX names are defined in the "
+        "Fragments only, trigger when this fragment is destroyed. If no bone is set (or bone tag is -1), the effect "
+        "triggers on any destroyed bone; otherwise, only on the specified bone. Valid FX names are defined in the "
         "FRAGMENTFX_DESTROY_PTFX block within entityfx.dat"
 
     ),
@@ -324,12 +351,16 @@ ParticleFxTypeEnumItems = tuple(label and (enum.name, f"{label} ({enum.value})",
 
 
 class ParticleExtensionProperties(ExtensionWithBoneTagMixin, BaseExtensionProperties, PropertyGroup):
+    __sz_preset_capture__ = (
+        "fx_name", "fx_type", "scale", "probability", "flags", "color"
+    )
+
     offset_rotation: FloatVectorProperty(name="Offset Rotation", subtype="EULER")
     fx_name: StringProperty(name="FX Name")
     fx_type: IntProperty(name="FX Type", min=0, max=7, default=ParticleFxType.AMBIENT.value)
-    bone_tag: IntProperty(name="Bone Tag", default=-1)
-    scale: FloatProperty(name="Scale")
-    probability: IntProperty(name="Probability", min=0, max=100, subtype="PERCENTAGE")
+    bone_tag: IntProperty(name="Bone Tag", default=0)
+    scale: FloatProperty(name="Scale", min=0.0, default=1.0)
+    probability: IntProperty(name="Probability", min=0, max=100, default=100, subtype="PERCENTAGE")
     flags: IntProperty(name="Flags", subtype="UNSIGNED")
     color: FloatVectorProperty(name="Tint Color", subtype="COLOR", min=0, max=1, size=4, default=(1, 1, 1, 1))
 
@@ -439,10 +470,14 @@ class ParticleExtensionProperties(ExtensionWithBoneTagMixin, BaseExtensionProper
 
 
 class AudioCollisionExtensionProperties(BaseExtensionProperties, PropertyGroup):
+    __sz_preset_capture__ = ("settings",)
+
     settings: StringProperty(name="Settings")
 
 
 class AudioEmitterExtensionProperties(BaseExtensionProperties, PropertyGroup):
+    __sz_preset_capture__ = ("effect_hash",)
+
     offset_rotation: FloatVectorProperty(name="Offset Rotation", subtype="EULER")
     effect_hash: StringProperty(name="Effect Hash")
 
@@ -458,22 +493,29 @@ ExplosionFxTypeEnumItems = tuple(label and (enum.name, f"{label} ({enum.value})"
     (
         ExplosionFxType.SHOT_POINT,
         "Shot (at impact point)",
-        "Trigger when this object is shot at. The explosion will be created at the point where the object was shot"
+        "Trigger when this object is shot at. The explosion will be created at the point where the object was shot. If "
+        "no bone is set (or bone tag is -1), the explosion triggers on any shot bone; otherwise, only on the specified "
+        "bone"
     ),
     (
         ExplosionFxType.SHOT_OFFSET,
         "Shot (at offset position)",
-        "Trigger when this object is shot at. The explosion will be created at the extension offset position"
+        "Trigger when this object is shot at. The explosion will be created at the extension offset position. If no "
+        "bone is set (or bone tag is -1), the explosion triggers on any shot bone; otherwise, only on the specified "
+        "bone"
+
     ),
     (
         ExplosionFxType.BREAK,
         "Break",
-        "Fragments only, trigger when this fragment breaks apart"
+        "Fragments only, trigger when this fragment breaks apart. If no bone is set (or bone tag is -1), the explosion "
+        "triggers on any broken bone; otherwise, only on the specified bone"
     ),
     (
         ExplosionFxType.DESTROY,
         "Destroy",
-        "Fragments only, trigger when this fragment is destroyed"
+        "Fragments only, trigger when this fragment is destroyed. If no bone is set (or bone tag is -1), the explosion "
+        "triggers on any destroyed bone; otherwise, only on the specified bone"
     ),
 ))
 
@@ -564,6 +606,8 @@ KNOWN_EXPLOSION_NAMES = (
 
 
 class ExplosionExtensionProperties(ExtensionWithBoneTagMixin, BaseExtensionProperties, PropertyGroup):
+    __sz_preset_capture__ = ("explosion_name", "explosion_type", "flags")
+
     offset_rotation: FloatVectorProperty(name="Offset Rotation", subtype="EULER")
     explosion_name: StringProperty(
         name="Explosion Name",
@@ -575,7 +619,9 @@ class ExplosionExtensionProperties(ExtensionWithBoneTagMixin, BaseExtensionPrope
         search=lambda s, c, v: KNOWN_EXPLOSION_NAMES,
         search_options={"SUGGESTION"}
     )
-    bone_tag: IntProperty(name="Bone Tag", default=-1)
+    # Game only uses explosion_name, this is here only to avoid a special case in import/export code. Not shown in UI.
+    explosion_tag: IntProperty(name="Explosion Tag (Unused)", default=0)
+    bone_tag: IntProperty(name="Bone Tag", default=0)
     explosion_type: IntProperty(name="Explosion Type", min=0, max=3, default=ExplosionFxType.SHOT_POINT.value)
     flags: IntProperty(name="Flags", subtype="UNSIGNED")
 
@@ -667,9 +713,11 @@ class ExplosionExtensionProperties(ExtensionWithBoneTagMixin, BaseExtensionPrope
 
 
 class LadderExtensionProperties(BaseExtensionProperties, PropertyGroup):
-    bottom: FloatVectorProperty(name="Bottom", subtype="TRANSLATION")
-    top: FloatVectorProperty(name="Top", subtype="TRANSLATION")
-    normal: FloatVectorProperty(name="Normal", subtype="TRANSLATION")
+    __sz_preset_capture__ = ("material_type", "template", "can_get_off_at_top", "can_get_off_at_bottom")
+
+    bottom: FloatVectorProperty(name="Bottom", subtype="TRANSLATION", default=(0.0, 0.0, -2.5))
+    top: FloatVectorProperty(name="Top", subtype="TRANSLATION", default=(0.0, 0.0, 0.0))
+    normal: FloatVectorProperty(name="Normal", subtype="TRANSLATION", default=(0.0, 1.0, 0.0))
     material_type: StringProperty(name="Material Type", default="METAL_SOLID_LADDER")
     template: StringProperty(name="Template", default="default")
     can_get_off_at_top: BoolProperty(name="Can Get Off At Top", default=True)
@@ -684,11 +732,16 @@ class LadderExtensionProperties(BaseExtensionProperties, PropertyGroup):
 
 
 class BuoyancyExtensionProperties(BaseExtensionProperties, PropertyGroup):
+    __sz_preset_capture__ = ()
     # No additional properties
     pass
 
 
 class ExpressionExtensionProperties(BaseExtensionProperties, PropertyGroup):
+    __sz_preset_capture__ = (
+        "expression_dictionary_name", "expression_name", "creature_metadata_name", "initialize_on_collision"
+    )
+
     expression_dictionary_name: StringProperty(name="Expression Dictionary Name")
     expression_name: StringProperty(name="Expression Name")
     creature_metadata_name: StringProperty(name="Creature Metadata Name")
@@ -696,16 +749,22 @@ class ExpressionExtensionProperties(BaseExtensionProperties, PropertyGroup):
 
 
 class LightShaftExtensionProperties(BaseExtensionProperties, PropertyGroup):
+    __sz_preset_capture__ = (
+        "density_type", "volume_type", "scale_by_sun_intensity", "direction_amount", "color", "intensity", "flashiness",
+        "flags", "fade_in_time_start", "fade_in_time_end", "fade_out_time_start", "fade_out_time_end",
+        "fade_distance_start", "fade_distance_end", "softness",
+    )
+
     density_type: EnumProperty(items=LightShaftDensityTypeEnumItems, name="Density Type")
     volume_type: EnumProperty(items=LightShaftVolumeTypeEnumItems, name="Volume Type")
     scale_by_sun_intensity: BoolProperty(name="Scale by Sun Intensity")
     direction_amount: FloatProperty(name="Direction Amount")
-    length: FloatProperty(name="Length")
+    length: FloatProperty(name="Length", default=1.0)
     color: FloatVectorProperty(
         name="Color", subtype="COLOR", min=0, max=1, size=4, default=(1, 1, 1, 1))
     intensity: FloatProperty(name="Intensity")
     flashiness: EnumProperty(name="Flashiness", items=LightFlashinessEnumItems,
-                             default=Flashiness.CONSTANT.name)
+                             default=LightFlashiness.CONSTANT.name)
     flags: IntProperty(name="Flags")
     fade_in_time_start: FloatProperty(name="Fade In Time Start")
     fade_in_time_end: FloatProperty(name="Fade In Time End")
@@ -714,16 +773,11 @@ class LightShaftExtensionProperties(BaseExtensionProperties, PropertyGroup):
     fade_distance_start: FloatProperty(name="Fade Distance Start")
     fade_distance_end: FloatProperty(name="Fade Distance End")
     softness: FloatProperty(name="Softness")
-    cornerA: FloatVectorProperty(
-        name="Corner A", subtype="TRANSLATION")
-    cornerB: FloatVectorProperty(
-        name="Corner B", subtype="TRANSLATION")
-    cornerC: FloatVectorProperty(
-        name="Corner C", subtype="TRANSLATION")
-    cornerD: FloatVectorProperty(
-        name="Corner D", subtype="TRANSLATION")
-    direction: FloatVectorProperty(
-        name="Direction", subtype="XYZ")
+    cornerA: FloatVectorProperty(name="Corner A", subtype="TRANSLATION", default=(-0.1, 0.0, 0.1))
+    cornerB: FloatVectorProperty(name="Corner B", subtype="TRANSLATION", default=(0.1, 0.0, 0.1))
+    cornerC: FloatVectorProperty(name="Corner C", subtype="TRANSLATION", default=(0.1, 0.0, -0.1))
+    cornerD: FloatVectorProperty(name="Corner D", subtype="TRANSLATION", default=(-0.1, 0.0, -0.1))
+    direction: FloatVectorProperty(name="Direction", subtype="XYZ", default=(0.0, 1.0, 0.0))
 
     # HACK: import/export iterates the annotations matching properties here with properties in the XML class,
     # if they don't match it prints a warning. This is not really flexible when we need a different layout
@@ -820,17 +874,22 @@ class LightShaftExtensionProperties(BaseExtensionProperties, PropertyGroup):
 
 
 class SpawnPointExtensionProperties(BaseExtensionProperties, PropertyGroup):
+    __sz_preset_capture__ = (
+        "spawn_type", "ped_type", "group", "interior", "required_imap", "probability", "time_till_ped_leaves",
+        "radius", "start", "end", "high_pri", "extended_range", "short_range", "available_in_mp_sp", "scenario_flags"
+    )
+
     offset_rotation: FloatVectorProperty(name="Offset Rotation", subtype="EULER")
     spawn_type: StringProperty(name="Spawn Type")
     ped_type: StringProperty(name="Ped Type")
     group: StringProperty(name="Group")
     interior: StringProperty(name="Interior")
-    required_map: StringProperty(name="Required Map")
+    required_imap: StringProperty(name="Required Map")
     probability: FloatProperty(name="Probability")
     time_till_ped_leaves: FloatProperty(name="Time Till Ped Leaves")
     radius: FloatProperty(name="Radius")
-    start: FloatProperty(name="Start")
-    end: FloatProperty(name="End")
+    start: IntProperty(name="Start", min=0, max=24)
+    end: IntProperty(name="End", min=0, max=24)
     high_pri: BoolProperty(name="High Priority")
     extended_range: BoolProperty(name="Extended Range")
     short_range: BoolProperty(name="Short Range")
@@ -841,6 +900,11 @@ class SpawnPointExtensionProperties(BaseExtensionProperties, PropertyGroup):
 
 
 class SpawnPointOverrideProperties(BaseExtensionProperties, PropertyGroup):
+    __sz_preset_capture__ = (
+        "scenario_type", "itime_start_override", "itime_end_override", "group", "model_set", "radius",
+        "time_till_ped_leaves", "available_in_mp_sp", "scenario_flags",
+    )
+
     scenario_type: StringProperty(name="Scenario Type")
     itime_start_override: FloatProperty(name="iTime Start Override")
     itime_end_override: FloatProperty(name="iTime End Override")
@@ -855,15 +919,22 @@ class SpawnPointOverrideProperties(BaseExtensionProperties, PropertyGroup):
 
 
 class WindDisturbanceExtensionProperties(ExtensionWithBoneTagMixin, BaseExtensionProperties, PropertyGroup):
+    __sz_preset_capture__ = ("disturbance_type", "size", "strength", "flags")
+
     offset_rotation: FloatVectorProperty(name="Offset Rotation", subtype="EULER")
     disturbance_type: IntProperty(name="Disturbance Type")
-    bone_tag: IntProperty(name="Bone Tag", default=-1)
+    bone_tag: IntProperty(name="Bone Tag", default=0)
     size: FloatVectorProperty(name="Size", size=4, subtype="XYZ")
     strength: FloatProperty(name="Strength")
     flags: IntProperty(name="Flags")
 
 
 class ProcObjectExtensionProperties(BaseExtensionProperties, PropertyGroup):
+    __sz_preset_capture__ = (
+        "radius_inner", "radius_outer", "spacing", "min_scale", "max_scale", "min_scale_z", "max_scale_z",
+        "min_z_offset", "max_z_offset", "flags",
+    )
+
     radius_inner: FloatProperty(name="Radius Inner")
     radius_outer: FloatProperty(name="Radius Outer")
     spacing: FloatProperty(name="Spacing")
@@ -878,7 +949,8 @@ class ProcObjectExtensionProperties(BaseExtensionProperties, PropertyGroup):
 
 
 class LightEffectExtensionProperties(BaseExtensionProperties, PropertyGroup):
-    ignored_in_import_export = {"parent_obj"}
+    __sz_preset_capture__ = ()
+    ignored_in_import_export = {"linked_lights_object"}
 
     linked_lights_object: PointerProperty(name="Linked Lights", type=Object)
 
@@ -983,20 +1055,6 @@ class ExtensionsContainer:
 
         item: ExtensionProperties = self.extensions.add()
         item.extension_type = ext_type
-
-        # assign some sane defaults to light shaft and ladder so the gizmos are shown properly
-        light_shaft_props = item.light_shaft_extension_properties
-        s = 0.1  # half size
-        light_shaft_props.cornerA = -s, 0.0, s
-        light_shaft_props.cornerB = s, 0.0, s
-        light_shaft_props.cornerC = s, 0.0, -s
-        light_shaft_props.cornerD = -s, 0.0, -s
-        light_shaft_props.length = s * 4.0
-        light_shaft_props.direction = 0.0, 1.0, 0.0
-
-        ladder_props = item.ladder_extension_properties
-        ladder_props.bottom = 0.0, 0.0, -2.5
-
         return item
 
     def delete_selected_extension(self):

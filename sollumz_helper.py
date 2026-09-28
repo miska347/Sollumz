@@ -3,6 +3,7 @@ import traceback
 import time
 from typing import Optional
 from abc import abstractmethod
+from enum import auto, Enum
 from mathutils import Matrix
 
 from .sollumz_properties import SollumType
@@ -10,8 +11,9 @@ from .tools.blenderhelper import get_bone_pose_matrix
 
 
 from .sollumz_preferences import get_export_settings
-from .tools.blenderhelper import get_children_recursive, get_object_with_children
+from .tools.blenderhelper import get_children_recursive, get_object_with_children_recursive
 from .sollumz_properties import BOUND_TYPES, SollumType, MaterialType, LODLevel
+from .shared.object_hierarchy import ObjectHierarchySnapshot
 
 
 class SOLLUMZ_OT_base:
@@ -35,7 +37,7 @@ class SOLLUMZ_OT_base:
         except:
             result = False
             self.error(
-                f"Error occured running operator : {self.bl_idname} \n {traceback.format_exc()}")
+                f"Error occurred running operator : {self.bl_idname} \n {traceback.format_exc()}")
         end = time.time()
 
         if self.bl_showtime and result == True:
@@ -62,23 +64,12 @@ class SOLLUMZ_OT_base:
 
 def set_object_collection(obj):
     target = bpy.context.view_layer.active_layer_collection.collection
-    objs = get_object_with_children(obj)
+    objs = get_object_with_children_recursive(obj)
     for obj in objs:
         if len(obj.users_collection) > 0:
             collection = obj.users_collection[0]
             collection.objects.unlink(obj)
         target.objects.link(obj)
-
-
-def get_sollumz_objects_from_objects(objs, sollum_type):
-    robjs = []
-    for obj in objs:
-        if obj.sollum_type in sollum_type:
-            robjs.append(obj)
-        for child in obj.children:
-            if child.sollum_type in sollum_type:
-                robjs.append(child)
-    return robjs
 
 
 def has_embedded_textures(obj):
@@ -98,8 +89,11 @@ def has_collision(obj):
     return False
 
 
-def duplicate_object_with_children(obj):
-    objs = get_object_with_children(obj)
+def duplicate_object_with_children(obj, hierarchy: ObjectHierarchySnapshot | None = None):
+    """Duplicates `obj` and its whole hierarchy, linking the copies to the current scene. Pass `hierarchy` when
+    duplicating many objects to avoid rebuilding it for each one.
+    """
+    objs = get_object_with_children_recursive(obj, hierarchy)
     new_objs = []
     for o in objs:
         new_obj = o.copy()
@@ -118,33 +112,66 @@ def duplicate_object_with_children(obj):
 
 
 def find_sollumz_parent(obj: bpy.types.Object, parent_type: Optional[SollumType] = None) -> bpy.types.Object | None:
-    """Find parent Fragment or Drawable if one exists. Returns None otherwise."""
-    parent_types = [SollumType.FRAGMENT, SollumType.DRAWABLE, SollumType.DRAWABLE_DICTIONARY,
-                    SollumType.CLIP_DICTIONARY, SollumType.YMAP, SollumType.BOUND_COMPOSITE]
+    """Find the Sollumz object ``obj`` belongs to, ``obj`` itself included. Returns None otherwise.
 
-    if parent_type is not None and obj.parent is not None and obj.parent.sollum_type == parent_type:
-        return obj.parent
+    With ``parent_type``, the closest ancestor of that type is returned; otherwise, the root
+    Fragment/Drawable/dictionary of the hierarchy.
+    """
+    if parent_type is not None:
+        while obj is not None:
+            if obj.sollum_type == parent_type:
+                return obj
 
-    if obj.parent is None and obj.sollum_type in parent_types:
-        return obj
+            obj = obj.parent
 
-    if obj.parent is None:
         return None
 
-    return find_sollumz_parent(obj.parent, parent_type)
+    parent_types = [SollumType.FRAGMENT, SollumType.DRAWABLE, SollumType.DRAWABLE_DICTIONARY,
+                    SollumType.CLIP_DICTIONARY, SollumType.DEPRECATED__YMAP, SollumType.BOUND_COMPOSITE]
+
+    parent = obj.parent
+    if parent is None:
+        return obj if obj.sollum_type in parent_types else None
+
+    return find_sollumz_parent(parent)
 
 
-def get_sollumz_materials(obj: bpy.types.Object):
-    """Get all Sollumz materials used by ``drawable_obj``."""
+class GetSollumzMaterialsMode(Enum):
+    ALL = auto()
+    """Get materials from all LODs."""
+    BASE = auto()
+    """Get materials from high to very low LODs."""
+    HI = auto()
+    """Get materials from very high LODs."""
+
+
+def get_sollumz_materials(
+    obj: bpy.types.Object,
+    mode: GetSollumzMaterialsMode = GetSollumzMaterialsMode.ALL,
+    out_material_to_models: dict[bpy.types.Material, list[bpy.types.Object]] | None = None,
+    include_root_obj: bool = False,
+) -> list[bpy.types.Material]:
+    """Get Sollumz materials used by ``obj``."""
     materials: list[bpy.types.Material] = []
-    used_materials: dict[bpy.types.Material, bool] = {}
+    used_materials: set[bpy.types.Material] = set()
 
-    for child in get_children_recursive(obj):
+    match mode:
+        case GetSollumzMaterialsMode.ALL:
+            lod_levels = LODLevel
+        case GetSollumzMaterialsMode.BASE:
+            lod_levels = (LODLevel.HIGH, LODLevel.MEDIUM, LODLevel.LOW, LODLevel.VERYLOW)
+        case GetSollumzMaterialsMode.HI:
+            lod_levels = (LODLevel.VERYHIGH,)
+        case _:
+            raise ValueError(f"Invalid mode '{mode}'")
+
+    children = get_object_with_children_recursive(obj) if include_root_obj else get_children_recursive(obj)
+    for child in children:
         if child.sollum_type != SollumType.DRAWABLE_MODEL:
             continue
 
         lods = child.sz_lods
-        for lod_level in LODLevel:
+        for lod_level in lod_levels:
             lod = lods.get_lod(lod_level)
             lod_mesh = lod.mesh
             if lod_mesh is None:
@@ -158,7 +185,14 @@ def get_sollumz_materials(obj: bpy.types.Object):
 
                 if mat not in used_materials:
                     materials.append(mat)
-                    used_materials[mat] = True
+                    used_materials.add(mat)
+
+                if out_material_to_models is not None:
+                    if mat not in out_material_to_models:
+                        out_material_to_models[mat] = []
+
+                    if child not in out_material_to_models[mat]:
+                        out_material_to_models[mat].append(child)
 
     return sorted(materials, key=lambda m: m.shader_properties.index)
 
@@ -178,6 +212,10 @@ def get_parent_inverse(obj: bpy.types.Object) -> Matrix:
 
     if obj.matrix_world.is_identity or parent_obj is None:
         return Matrix()
+
+    if parent_obj.sollum_type == SollumType.DRAWABLE_DICTIONARY:
+        # Drawables in a dictionary are independent assets, each one is its own origin, not the dictionary
+        parent_obj = find_sollumz_parent(obj, SollumType.DRAWABLE) or parent_obj
 
     if get_export_settings().apply_transforms:
         if parent_obj.sollum_type == SollumType.BOUND_COMPOSITE:

@@ -4,6 +4,7 @@ import bmesh
 from mathutils import Matrix, Vector
 from typing import Optional, Tuple
 
+from ..shared.object_hierarchy import ObjectHierarchySnapshot
 from ..sollumz_properties import SOLLUMZ_UI_NAMES, LODLevel
 
 from ..sollumz_properties import SOLLUMZ_UI_NAMES, SollumType
@@ -15,7 +16,7 @@ def get_all_collections():
 
 def remove_number_suffix(string: str):
     """Remove the .00# at that Blender puts at the end of object names."""
-    match = re.search("\.[0-9]", string)
+    match = re.search(r"\.[0-9]", string)
 
     if match is None:
         return string
@@ -28,41 +29,10 @@ def create_brush(name):
     return bpy.data.brushes[name]
 
 
-def apply_terrain_brush_settings(brush, idx: int, paint_alpha: float | None = None):
-    if idx < 5:
-        brush.blend = "MIX"
-    if idx == 1:
-        brush.color = (0, 0, 0)
-        brush.strength = 1
-    elif idx == 2:
-        brush.color = (0, 0, 1)
-        brush.strength = 1
-    elif idx == 3:
-        brush.color = (0, 1, 0)
-        brush.strength = 1
-    elif idx == 4:
-        brush.color = (0, 1, 1)
-        brush.strength = 1
-    elif idx == 5:
-        assert paint_alpha is not None, "paint_alpha required"
-        if paint_alpha > 0:
-            brush.color = (1, 1, 1)
-            brush.blend = "ADD_ALPHA"
-            brush.strength = paint_alpha
-        else:
-            brush.color = (0, 0, 0)
-            brush.blend = "ERASE_ALPHA"
-            brush.strength = paint_alpha * -1
-
-
-def apply_terrain_brush_setting_to_current_brush(idx: int, paint_alpha: float | None = None):
-    brush = bpy.context.scene.tool_settings.vertex_paint.brush
-    apply_terrain_brush_settings(brush, idx, paint_alpha)
-
-
 def material_from_image(img, name="Material", nodename="Image"):
     mat = bpy.data.materials.new(name)
-    mat.use_nodes = True
+    if bpy.app.version < (5, 0, 0):
+        mat.use_nodes = True
     node_tree = mat.node_tree
     links = node_tree.links
     bsdf, _ = find_bsdf_and_material_output(mat)
@@ -74,15 +44,11 @@ def material_from_image(img, name="Material", nodename="Image"):
 
 
 def select_object_and_children(obj):
-    if obj.hide_get():
-        obj.hide_set(False)
-    obj.select_set(True)
-    for child in obj.children:
-        if child.hide_get():
-            child.hide_set(False)
-        child.select_set(True)
-        for grandchild in child.children:
-            select_object_and_children(grandchild)
+    hierarchy = ObjectHierarchySnapshot.for_scene()
+    for o in hierarchy.get_object_with_children_recursive(obj):
+        if o.hide_get():
+            o.hide_set(False)
+        o.select_set(True)
 
 
 def duplicate_object(obj):
@@ -259,29 +225,18 @@ def get_armature_obj(armature):
     return get_data_obj(armature)
 
 
-def get_children_recursive(obj) -> list[bpy.types.Object]:
-    children = []
-
+def get_children_recursive(obj, hierarchy: ObjectHierarchySnapshot | None = None) -> list[bpy.types.Object]:
     if obj is None:
-        return children
+        return []
 
-    if len(obj.children) < 1:
-        return children
-
-    for child in obj.children:
-        children.append(child)
-        if len(child.children) > 0:
-            children.extend(get_children_recursive(child))
-
-    return children
+    hierarchy = hierarchy or ObjectHierarchySnapshot.for_object(obj)
+    return hierarchy.get_children_recursive(obj)
 
 
-def get_object_with_children(obj):
+def get_object_with_children_recursive(obj, hierarchy: ObjectHierarchySnapshot | None = None):
     """Get the object including the whole child hierarchy"""
-    objs = [obj]
-    for child in get_children_recursive(obj):
-        objs.append(child)
-    return objs
+    hierarchy = hierarchy or ObjectHierarchySnapshot.for_object(obj)
+    return hierarchy.get_object_with_children_recursive(obj)
 
 
 # Sollumz types for which Object.hide_render should be set to false when created.
@@ -297,14 +252,15 @@ _types_to_hide_in_render = {
 }
 
 
-def create_blender_object(sollum_type: SollumType, name: Optional[str] = None, object_data: Optional[bpy.types.Mesh] = None) -> bpy.types.Object:
+def create_blender_object(sollum_type: SollumType, name: Optional[str] = None, object_data: Optional[bpy.types.Mesh] = None, link_to_context_collection: bool = True) -> bpy.types.Object:
     """Create a bpy object of the given sollum type and link it to the scene."""
     name = name or SOLLUMZ_UI_NAMES[sollum_type]
     object_data = object_data or bpy.data.meshes.new(name)
     obj = bpy.data.objects.new(name, object_data)
     obj.sollum_type = sollum_type
     obj.hide_render = sollum_type in _types_to_hide_in_render
-    bpy.context.collection.objects.link(obj)
+    if link_to_context_collection:
+        bpy.context.collection.objects.link(obj)
 
     return obj
 
@@ -455,6 +411,13 @@ def tag_redraw(context: bpy.types.Context, space_type: str = "PROPERTIES", regio
                 for region in area.regions:
                     if region.type == region_type:
                         region.tag_redraw()
+
+
+def tag_redraw_all_areas(context: bpy.types.Context):
+    """Redraw all areas in all windows"""
+    for window in context.window_manager.windows:
+        for area in window.screen.areas:
+            area.tag_redraw()
 
 
 def find_bsdf_and_material_output(material: bpy.types.Material) -> Tuple[bpy.types.ShaderNodeBsdfPrincipled, bpy.types.ShaderNodeOutputMaterial]:

@@ -4,9 +4,16 @@ from ..sollumz_properties import SollumType
 from ..tools.blenderhelper import find_child_by_type
 from ..tools.meshhelper import flip_uv
 from ..tools.utils import color_hash
-from ..tools.animationhelper import is_any_sollumz_animation_obj, update_uv_clip_hash, get_scene_fps
+from ..tools.animationhelper import (
+    is_any_sollumz_animation_obj,
+    update_uv_clip_hash,
+    get_scene_fps,
+    action_fcurves,
+    action_remove_fcurves,
+)
 from .ycdimport import create_clip_dictionary_template, create_anim_obj
 from .. import logger
+from ..shared.object_hierarchy import ObjectHierarchySnapshot
 
 
 class SOLLUMZ_OT_animations_set_target(SOLLUMZ_OT_base, bpy.types.Operator):
@@ -26,8 +33,9 @@ class SOLLUMZ_OT_animations_set_target(SOLLUMZ_OT_base, bpy.types.Operator):
         target_id = scene.sollumz_animations_target_id
         target_id_type = scene.sollumz_animations_target_id_type
 
+        hierarchy = ObjectHierarchySnapshot.for_scene()
         for animations_obj in animations_objects:
-            for animation_obj in animations_obj.children:
+            for animation_obj in hierarchy.get_children(animations_obj):
                 if animation_obj.sollum_type != SollumType.ANIMATION:
                     continue
 
@@ -636,9 +644,6 @@ class SOLLUMZ_OT_uv_transform_add(SOLLUMZ_OT_base, bpy.types.Operator):
         return context.active_object is not None
 
     def run(self, context):
-        if len(bpy.context.selected_objects) <= 0:
-            return {"FINISHED"}
-
         obj = context.active_object
         animation_tracks = obj.active_material.animation_tracks
         animation_tracks.uv_transforms.add()
@@ -657,9 +662,6 @@ class SOLLUMZ_OT_uv_transform_remove(SOLLUMZ_OT_base, bpy.types.Operator):
         return context.active_object is not None
 
     def run(self, context):
-        if len(bpy.context.selected_objects) <= 0:
-            return {"FINISHED"}
-
         obj = context.active_object
         animation_tracks = obj.active_material.animation_tracks
         animation_tracks.uv_transforms.remove(animation_tracks.uv_transforms_active_index)
@@ -685,9 +687,6 @@ class SOLLUMZ_OT_uv_transform_move(SOLLUMZ_OT_base, bpy.types.Operator):
         return context.active_object is not None
 
     def run(self, context):
-        if len(bpy.context.selected_objects) <= 0:
-            return {"FINISHED"}
-
         obj = context.active_object
         animation_tracks = obj.active_material.animation_tracks
 
@@ -875,9 +874,7 @@ class SOLLUMZ_OT_uv_sprite_sheet_anim(SOLLUMZ_OT_base, bpy.types.Operator):
         if mat.animation_data and mat.animation_data.action:
             # clear uv_transforms channels
             action = mat.animation_data.action
-            for fcurve in action.fcurves:
-                if fcurve.data_path.startswith("animation_tracks.uv_transforms"):
-                    action.fcurves.remove(fcurve)
+            action_remove_fcurves(action, lambda fcurve: fcurve.data_path.startswith("animation_tracks.uv_transforms"))
 
         animation_tracks.uv_transforms.clear()
         scale_transform = animation_tracks.uv_transforms.add()
@@ -924,7 +921,7 @@ class SOLLUMZ_OT_uv_sprite_sheet_anim(SOLLUMZ_OT_base, bpy.types.Operator):
 
         # make all keyframes constant
         action = mat.animation_data.action
-        for fcurve in action.fcurves:
+        for fcurve in action_fcurves(action):
             if fcurve.data_path.startswith("animation_tracks.uv_transforms"):
                 for keyframe in fcurve.keyframe_points:
                     keyframe.interpolation = "CONSTANT"
